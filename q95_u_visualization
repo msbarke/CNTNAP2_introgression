@@ -1,0 +1,224 @@
+# load needed packages
+library(ggplot2)
+library(dplyr)
+library(scales)
+
+# set the populations being compared
+population_2 <- "PUR"
+population_3 <- "Denisovan"
+population_1_list <- c("YRI", "CHB", "CEU")
+
+# make one set of plots for each p1 population
+for (population_1 in population_1_list) {
+
+  # set the genome-wide u-stat and q95 file
+  dist_file <- "path/to/data/YRI_PEL_Denisovan_ustats_55.0k.txt"
+  
+  # read the genome-wide data
+  data <- read.table(dist_file, header = TRUE, sep = "\t", stringsAsFactors = FALSE)
+  
+  # replace text nan values with missing values
+  data[data == "nan"] <- NA
+  
+  # make sure the data is a data frame
+  data <- data.frame(data)
+  
+  # convert all columns to numeric
+  data <- mutate_all(data, function(x) as.numeric(as.character(x)))
+  
+  # replace missing q95 values with zero
+  data$q95_1_50[is.na(data$q95_1_50)] <- 0
+  
+  # keep u-stat scores and site counts
+  dataustat <- data.frame(
+    ustat      = data$u_1_20_50,
+    site_count = data$site_count
+  )
+  
+  # keep q95 scores and site counts
+  dataq95 <- data.frame(
+    q95        = data$q95_1_50,
+    site_count = data$site_count
+  )
+  
+  # remove missing u-stat rows
+  dataustat <- na.omit(dataustat)
+  
+  # set the cntnap2 result file
+  cntnap2_file <- paste0(
+    "path/to/data/cntnap2/CNTNAP2ustat_q95_",
+    population_1, "_", population_2, "_", population_3, ".txt"
+  )
+  
+  # read the cntnap2 result file as lines
+  lines <- readLines(cntnap2_file)
+  
+  # pull out the cntnap2 u-stat score
+  cntnap2ustat <- as.numeric(sub(".*u_1_20_50:\\s*", "", 
+                                 lines[grep("u_1_20_50:", lines)]))
+  
+  # pull out the cntnap2 q95 score
+  cntnap2q95 <- as.numeric(sub(".*Q95_1_50:\\s*", "", 
+                               lines[grep("Q95_1_50:", lines)]))
+  
+  # get the genome-wide top 1% u-stat threshold
+  ustat_thresh <- quantile(dataustat$ustat, 0.99, na.rm = TRUE)
+  
+  # get the genome-wide top 1% q95 threshold
+  q95_thresh   <- quantile(dataq95$q95, 0.99, na.rm = TRUE)
+  
+  # set the q95 histogram bin width
+  q95_binwidth <- 0.02
+  
+  # make a q95 histogram object to get the max count
+  q95_hist <- hist(dataq95$q95,
+                   breaks = seq(
+                     floor(min(dataq95$q95, na.rm = TRUE) / q95_binwidth) * q95_binwidth,
+                     ceiling(max(dataq95$q95, na.rm = TRUE) / q95_binwidth) * q95_binwidth + q95_binwidth,
+                     by = q95_binwidth
+                   ),
+                   plot = FALSE)
+  
+  # get the highest q95 histogram count
+  q95_ymax <- max(q95_hist$counts, na.rm = TRUE)
+  
+  # make the q95 histogram
+  plotq95 <- ggplot(dataq95, aes(x = q95)) +
+    geom_histogram(binwidth = q95_binwidth,
+                   colour = "darkgray",
+                   fill   = "darkgray") +
+    
+    # add the genome-wide mean line
+    geom_vline(xintercept = mean(dataq95$q95, na.rm = TRUE),
+               color = "#E69F00",
+               linetype = "dashed",
+               linewidth = 2) +
+    
+    # add the cntnap2 q95 line
+    geom_vline(xintercept = cntnap2q95,
+               color = "#56B4E9",
+               linewidth = 2) +
+    
+    # add the genome-wide top 1% q95 line
+    geom_vline(xintercept = q95_thresh,
+               color = "red",
+               linetype = "dashed",
+               linewidth = 2) +
+    
+    # show y-axis counts in thousands
+    scale_y_continuous(labels = comma_format(scale = 1e-3),
+                       expand = expansion(mult = c(0, 0.08))) +
+    
+    # label the axes
+    xlab("Q95 score") +
+    ylab("Number of windows (thousands)") +
+    
+    # set the plot theme
+    theme_minimal(base_size = 16) +
+    theme(
+      axis.title.x     = element_text(size = 18, margin = margin(t = 10)),
+      axis.title.y     = element_text(size = 18, margin = margin(r = 10)),
+      axis.text.x      = element_text(size = 16),
+      axis.text.y      = element_text(size = 16),
+      panel.grid.major = element_line(linewidth = 0.6, color = "gray"),
+      panel.grid.minor = element_line(linewidth = 0.3, color = "lightgray"),
+      panel.background = element_blank(),
+      plot.background  = element_blank()
+    ) +
+    
+    # label the cntnap2 line
+    annotate("text",
+             x = cntnap2q95,
+             y = q95_ymax,
+             label = "CNTNAP2",
+             vjust = -0.3,
+             hjust = 2,
+             color = "#56B4E9",
+             size = 8,
+             angle = 90,
+             fontface = "bold")
+  
+  # show the q95 plot
+  print(plotq95)
+  
+  # set the u-stat histogram bin width
+  ustat_binwidth <- 3
+  
+  # make a u-stat histogram object to get the max count
+  ustat_hist <- hist(dataustat$ustat,
+                     breaks = seq(
+                       floor(min(dataustat$ustat, na.rm = TRUE) / ustat_binwidth) * ustat_binwidth,
+                       ceiling(max(dataustat$ustat, na.rm = TRUE) / ustat_binwidth) * ustat_binwidth + ustat_binwidth,
+                       by = ustat_binwidth
+                     ),
+                     plot = FALSE)
+  
+  # get the highest u-stat histogram count
+  ustat_ymax <- max(ustat_hist$counts, na.rm = TRUE)
+  
+  # make the u-stat histogram
+  plotustat <- ggplot(dataustat, aes(x = ustat)) +
+    geom_histogram(binwidth = ustat_binwidth,
+                   colour = "darkgray",
+                   fill   = "darkgray") +
+    
+    # add the genome-wide mean line
+    geom_vline(xintercept = mean(dataustat$ustat, na.rm = TRUE),
+               color = "#E69F00",
+               linetype = "dashed",
+               linewidth = 2) +
+    
+    # add the cntnap2 u-stat line
+    geom_vline(xintercept = cntnap2ustat,
+               color = "#56B4E9",
+               linewidth = 2) +
+    
+    # add the genome-wide top 1% u-stat line
+    geom_vline(xintercept = ustat_thresh,
+               color = "red",
+               linetype = "dashed",
+               linewidth = 2) +
+    
+    # set the x-axis view
+    coord_cartesian(
+      xlim = c(min(dataustat$ustat, na.rm = TRUE) - 2 * ustat_binwidth, NA),
+      clip = "off"
+    ) +
+    
+    # show y-axis counts in thousands
+    scale_y_continuous(labels = comma_format(scale = 1e-3),
+                       expand = expansion(mult = c(0, 0.08))) +
+    
+    # label the axes
+    xlab("U-stat score") +
+    ylab("Number of windows (thousands)") +
+    
+    # set the plot theme
+    theme_minimal(base_size = 16) +
+    theme(
+      axis.title.x     = element_text(size = 18, margin = margin(t = 10)),
+      axis.title.y     = element_text(size = 18, margin = margin(r = 10)),
+      axis.text.x      = element_text(size = 16),
+      axis.text.y      = element_text(size = 16),
+      panel.grid.major = element_line(linewidth = 0.6, color = "gray"),
+      panel.grid.minor = element_line(linewidth = 0.3, color = "lightgray"),
+      panel.background = element_blank(),
+      plot.background  = element_blank(),
+      plot.margin      = margin(10, 10, 10, 30)
+    ) +
+    
+    # label the cntnap2 line
+    annotate("text",
+             x = cntnap2ustat,
+             y = ustat_ymax,
+             label = "CNTNAP2",
+             vjust = -0.3,
+             hjust = 2,
+             color = "#56B4E9",
+             size = 8,
+             angle = 90,
+             fontface = "bold")
+  
+  # show the u-stat plot
+  print(plotustat)
+}
