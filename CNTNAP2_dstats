@@ -1,0 +1,198 @@
+
+import gzip
+import re
+
+# only run chromosome 7
+chroms = list(range(7, 8))
+
+# cntnap2 region
+cntnap2_start = 147365000
+cntnap2_end   = 147420000
+
+# populations for d-statistics
+p1_pops = ["CHB", "YRI", "CEU"]
+p2_pops = ["CLM", "PUR"]
+p3_pops = ["Denisovan"]
+
+# all populations in dataset
+pops = ["ACB", "ASW", "GWD", "YRI", "LWK", "ESN", "MSL",
+        "GBR", "FIN", "CEU", "IBS", "TSI", "CHS", "CHB",
+        "CDX", "JPT", "KHV", "GIH", "STU", "PJL", "ITU",
+        "BEB", "PEL", "MXL", "CLM", "PUR"]
+
+# sample panel file
+panel_file = "path/to/data/integrated_call_samples.panel"
+
+# track sample indices for each population
+pop_tracker = {pop: [] for pop in pops}
+
+# read panel file and assign column indices
+with open(panel_file) as panel:
+    next(panel)
+    col_count = 9
+    for line in panel:
+        panel_spline = line.split('\t')
+        panel_pop    = panel_spline[1]
+        pop_tracker[panel_pop].append(col_count)
+        col_count += 1
+
+# calculate derived allele frequency for each population
+def calculate_derived_allele_frequency(p1_pop, p2_pop, pop_tracker,
+                                       kgp_spline, kgp_ref,
+                                       anc_allele, arc_geno):
+    p1_count = p2_count = 0
+    p1_chroms = len(pop_tracker[p1_pop]) * 2
+    p2_chroms = len(pop_tracker[p2_pop]) * 2
+
+    # count derived alleles based on ancestral state
+    if anc_allele == kgp_ref:
+        for idx in pop_tracker[p1_pop]:
+            p1_count += kgp_spline[idx].count("1")
+        for idx in pop_tracker[p2_pop]:
+            p2_count += kgp_spline[idx].count("1")
+        p3_count = arc_geno.count("1")
+    else:
+        for idx in pop_tracker[p1_pop]:
+            p1_count += kgp_spline[idx].count("0")
+        for idx in pop_tracker[p2_pop]:
+            p2_count += kgp_spline[idx].count("0")
+        p3_count = arc_geno.count("0")
+
+    return p1_count / p1_chroms, p2_count / p2_chroms, p3_count / 2
+
+# calculate all d-type statistics
+def calculate_d_statistics(d_numer_count, d_denom_count, 
+                           dplus_numer_count, dplus_denom_count, 
+                           dance_numer_count, dance_denom_count, 
+                           fd_numer_count, fd_denom_count, 
+                           fdm_numer_count, fdm_denom_count, 
+                           df_numer_count, df_denom_count):
+
+    # handle near-zero denominators
+    if abs(d_denom_count) < 0.1:
+        d = "NearZeroDenominator"
+    else:
+        d = d_numer_count / d_denom_count    
+
+    if abs(dplus_denom_count) < 0.1:
+        d_plus = "NearZeroDenominator"
+    else:
+        d_plus = dplus_numer_count / dplus_denom_count
+
+    if abs(dance_denom_count) < 0.1:
+        dance = "NearZeroDenominator"
+    else:
+        dance = dance_numer_count / dance_denom_count
+
+    if abs(fd_denom_count) < 0.1:
+        fd = "NearZeroDenominator"
+    else:
+        fd = fd_numer_count / fd_denom_count
+
+    if abs(fdm_denom_count) < 0.1:
+        fdm = "NearZeroDenominator"
+    else:
+        fdm = fdm_numer_count / fdm_denom_count
+
+    if abs(df_denom_count) < 0.1:
+        df = "NearZeroDenominator"
+    else:
+        df = df_numer_count / df_denom_count
+
+    return d, d_plus, dance, fd, fdm, df
+
+# loop through population combinations
+for p1_pop in p1_pops:
+    for p2_pop in p2_pops:
+        for p3_pop in p3_pops:
+
+            print(f"{p1_pop}_{p2_pop}_{p3_pop}: ")
+
+            # initialize counters
+            site_count_1 = 0
+            d_numer_count_1 = d_denom_count_1 = 0
+            dplus_numer_count_1 = dplus_denom_count_1 = 0
+            dance_numer_count_1 = dance_denom_count_1 = 0
+            fd_numer_count_1 = fd_denom_count_1 = 0
+            fdm_numer_count_1 = fdm_denom_count_1 = 0
+            df_numer_count_1 = df_denom_count_1 = 0
+
+            for chrom in chroms:
+
+                # input files
+                kgp_file = f"path/to/data/kgp_chr{chrom}.vcf.gz"
+                arc_file = f"path/to/data/archaic_chr{chrom}.vcf.gz"
+
+                # open archaic file
+                arc = gzip.open(arc_file, 'rt')
+                arc_line = next(arc)
+                while arc_line.startswith("#"):
+                    arc_line = next(arc)
+
+                # loop through kgp file
+                with gzip.open(kgp_file, 'rt') as kgp:
+                    for kgp_line in kgp:
+                        if kgp_line.startswith("#"):
+                            continue
+
+                        kgp_spline = kgp_line.split('\t')
+                        kgp_pos    = int(kgp_spline[1])
+
+                        # only keep cntnap2 region
+                        if cntnap2_start <= kgp_pos <= cntnap2_end:
+
+                            # sync archaic file to same position
+                            arc_spline = arc_line.split('\t')
+                            arc_pos    = int(arc_spline[1])
+                            while arc_pos < kgp_pos:
+                                try:
+                                    arc_line   = next(arc)
+                                    arc_spline = arc_line.split('\t')
+                                    arc_pos    = int(arc_spline[1])
+                                except StopIteration:
+                                    break
+                            if arc_pos != kgp_pos:
+                                continue
+
+                            # filter indels and low quality sites
+                            kgp_ref, kgp_alt = kgp_spline[3], kgp_spline[4]
+                            arc_alt = arc_spline[4]
+                            if len(kgp_ref) > 1 or len(kgp_alt) > 1 or len(arc_alt) > 1:
+                                continue
+                            if int(arc_spline[5]) <= 30:
+                                continue
+
+                            # get ancestral allele
+                            kgp_info = kgp_spline[7]
+                            anc_match = re.findall(r"AA=[ACGTacgt]", kgp_info)
+                            if not anc_match:
+                                continue
+                            anc_allele = anc_match[0][-1].upper()
+
+                            # compute allele frequencies
+                            arc_geno = arc_spline[9][:3]
+                            p1, p2, p3 = calculate_derived_allele_frequency(
+                                p1_pop, p2_pop, pop_tracker,
+                                kgp_spline, kgp_ref, anc_allele, arc_geno
+                            )
+
+                            # accumulate statistics
+                            d_numer = ((1-p1)*p2*p3) - (p1*(1-p2)*p3)
+                            d_denom = ((1-p1)*p2*p3) + (p1*(1-p2)*p3)
+                            d_numer_count_1 += d_numer
+                            d_denom_count_1 += d_denom
+
+                            site_count_1 += 1
+
+            # compute final statistics
+            d, d_plus, dance, fd, fdm, df = calculate_d_statistics(
+                d_numer_count_1, d_denom_count_1,
+                dplus_numer_count_1, dplus_denom_count_1,
+                dance_numer_count_1, dance_denom_count_1,
+                fd_numer_count_1, fd_denom_count_1,
+                fdm_numer_count_1, fdm_denom_count_1,
+                df_numer_count_1, df_denom_count_1
+            )
+
+            # print results
+            print(f"d: {d}, d_plus: {d_plus}, dance: {dance}, fd: {fd}, fdm: {fdm}, df: {df}")
