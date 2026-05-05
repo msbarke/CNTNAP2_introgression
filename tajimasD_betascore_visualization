@@ -1,0 +1,241 @@
+# load needed packages
+library(ggplot2)
+library(dplyr)
+library(grid)
+library(patchwork)
+
+# set the folder with tajima's d files
+dir_path <- "path/to/tajimasd/"
+
+# make file paths for chromosomes 1 to 22
+file_paths <- paste0(dir_path, "pel_chr", 1:22, "_55kb.Tajima.D")
+
+# make an empty list for the files
+df_list <- vector("list", 22)
+
+# read each chromosome file
+for (i in 1:22) {
+  df_list[[i]] <- read.table(file_paths[i], header = TRUE)
+}
+
+# combine all chromosomes
+combined_df <- do.call(rbind, df_list)
+
+# replace nan values with missing values
+combined_df$TajimaD[is.nan(combined_df$TajimaD)] <- NA
+
+# make cumulative genome positions
+combined_df$cumulative_position <- NA
+cumulative_offset <- 0
+
+# add chromosome offsets
+for (chr in 1:22) {
+  chr_data <- subset(combined_df, CHROM == chr)
+  combined_df$cumulative_position[combined_df$CHROM == chr] <-
+    chr_data$BIN_START + cumulative_offset
+  cumulative_offset <- max(chr_data$BIN_START, na.rm = TRUE) + cumulative_offset
+}
+
+# set alternating chromosome colors
+combined_df$color_chr <- ifelse(combined_df$CHROM %% 2 == 1, "plum4", "darkgray")
+
+# get chromosome midpoints for x-axis labels
+chrom_mid <- combined_df %>%
+  group_by(CHROM) %>%
+  summarise(mid = mean(cumulative_position, na.rm = TRUE), .groups = "drop")
+
+# get the cntnap2 window
+chr7_range <- subset(
+  combined_df,
+  CHROM == 7 & BIN_START >= 147360000 & BIN_START <= 147420000
+)
+
+# make the label position for tajima's d
+yrange_A <- diff(range(combined_df$TajimaD, na.rm = TRUE))
+label_df_A <- chr7_range %>%
+  slice_max(TajimaD, n = 1, with_ties = FALSE) %>%
+  mutate(label_y = TajimaD + 0.06 * yrange_A)
+
+# get the top 1% tajima's d threshold
+tajd_threshold <- quantile(combined_df$TajimaD, 0.99, na.rm = TRUE)
+
+# make the tajima's d plot
+p1 <- ggplot(combined_df, aes(x = cumulative_position, y = TajimaD)) +
+  geom_point(aes(color = color_chr), alpha = 0.5, size = 1) +
+  scale_color_identity() +
+  geom_point(data = chr7_range, color = "black", size = 2) +
+  geom_hline(yintercept = tajd_threshold, linetype = "dashed", color = "red") +
+  geom_text(
+    data = label_df_A,
+    aes(x = cumulative_position, y = label_y, label = "Denisovan haplotype"),
+    inherit.aes = FALSE,
+    color = "black",
+    fontface = "bold",
+    size = 3.5,
+    angle = 0,
+    hjust = 0.5,
+    vjust = 0
+  ) +
+  scale_x_continuous(
+    breaks = chrom_mid$mid,
+    labels = as.character(chrom_mid$CHROM)
+  ) +
+  scale_y_continuous(
+    breaks = seq(
+      floor(min(combined_df$TajimaD, na.rm = TRUE)),
+      ceiling(max(combined_df$TajimaD, na.rm = TRUE)),
+      by = 1
+    ),
+    expand = expansion(mult = c(0.02, 0.14))
+  ) +
+  coord_cartesian(clip = "off") +
+  labs(
+    x = "Chromosome",
+    y = "Tajima's D",
+    title = "PEL Tajima's D (55 kb windows)"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 0, hjust = 0.5),
+    axis.ticks.x = element_blank(),
+    legend.position = "none",
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank(),
+    panel.grid.major.y = element_line(color = "gray", linewidth = 0.2),
+    plot.margin = margin(5.5, 5.5, 5.5, 5.5)
+  )
+
+# set the betascore input file
+infile   <- "path/to/betascore/betastat_PEL_autosomes_55kb_enrichment.genome.tsv"
+
+# set the minimum number of snps
+min_snps <- 50
+
+# set the cntnap2 highlight position
+highlight_chr  <- "chr7"
+highlight_pos  <- 147365000
+highlight_y    <- 25.36
+
+# read the betascore data
+data <- read.table(infile, header = TRUE, sep = "\t",
+                   stringsAsFactors = FALSE, check.names = FALSE)
+
+# make column names lowercase
+names(data) <- tolower(names(data))
+
+# clean and format betascore data
+data <- data %>%
+  mutate(
+    chrom      = as.character(chrom),
+    chr_num    = suppressWarnings(as.numeric(gsub("^chr", "", chrom))),
+    chr_num    = ifelse(is.na(chr_num), 1000L + as.integer(as.factor(chrom)), chr_num),
+    start      = as.numeric(start),
+    end        = as.numeric(end),
+    mid        = (start + end) / 2,
+    n_snps     = as.numeric(n_snps),
+    n_top      = as.numeric(n_top),
+    meanscore  = as.numeric(meanscore)
+  ) %>%
+  filter(!is.na(meanscore), n_snps >= min_snps)
+
+# get the top 1% betascore threshold
+q99_line <- quantile(data$meanscore, probs = 0.99, na.rm = TRUE)
+
+# make chromosome offsets for betascore data
+data_cum <- data %>%
+  group_by(chrom, chr_num) %>%
+  summarise(max_bp = max(end, na.rm = TRUE), .groups = "drop") %>%
+  arrange(chr_num) %>%
+  mutate(bp_add = lag(cumsum(max_bp), default = 0)) %>%
+  select(chrom, chr_num, bp_add)
+
+# get chromosome order
+chrom_levels <- data_cum %>%
+  arrange(chr_num) %>%
+  pull(chrom) %>%
+  unique()
+
+# add cumulative positions
+data_common <- data %>%
+  select(chrom, chr_num, start, end, mid, meanscore, n_top, n_snps) %>%
+  inner_join(data_cum %>% select(chrom, bp_add), by = "chrom") %>%
+  mutate(
+    bp_cum = mid + bp_add,
+    chrom  = factor(chrom, levels = chrom_levels)
+  )
+
+# get chromosome centers for x-axis labels
+axis_set <- data_common %>%
+  group_by(chrom) %>%
+  summarise(center = mean(bp_cum, na.rm = TRUE), .groups = "drop")
+
+# get the offset for the highlighted chromosome
+highlight_offset <- data_cum$bp_add[match(highlight_chr, data_cum$chrom)]
+
+# make the highlighted cntnap2 point
+highlight_df <- data.frame(
+  bp_cum = highlight_pos + highlight_offset,
+  meanscore = highlight_y
+)
+
+# set alternating chromosome colors
+n_chrom  <- length(levels(data_common$chrom))
+alt_cols <- rep(c("plum4", "darkgray"), length.out = n_chrom)
+names(alt_cols) <- levels(data_common$chrom)
+
+# make the label position for betascore
+yrange_B <- diff(range(data_common$meanscore, na.rm = TRUE))
+label_df_B <- highlight_df %>%
+  mutate(label_y = meanscore + 0.06 * yrange_B)
+
+# make the betascore plot
+p2 <- ggplot(data_common, aes(x = bp_cum, y = meanscore, color = chrom)) +
+  geom_point(alpha = 0.6, size = 0.6) +
+  geom_hline(yintercept = q99_line, linetype = "dashed", color = "red") +
+  geom_point(
+    data = highlight_df,
+    aes(x = bp_cum, y = meanscore),
+    inherit.aes = FALSE,
+    color = "black",
+    size = 2
+  ) +
+  geom_text(
+    data = label_df_B,
+    aes(x = bp_cum, y = label_y, label = "Denisovan haplotype"),
+    inherit.aes = FALSE,
+    color = "black",
+    fontface = "bold",
+    size = 3.5,
+    angle = 0,
+    hjust = 0.5,
+    vjust = 0
+  ) +
+  scale_x_continuous(
+    breaks = axis_set$center,
+    labels = gsub("^chr", "", axis_set$chrom)
+  ) +
+  scale_y_continuous(limits = c(0, 125), expand = expansion(mult = c(0.02, 0.14))) +
+  scale_color_manual(values = alt_cols, guide = "none") +
+  labs(
+    title = "PEL Mean Betascore (55 kb windows)",
+    x = "Chromosome",
+    y = "Mean Score"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    panel.grid.minor   = element_blank(),
+    panel.grid.major.x = element_blank(),
+    axis.text.x        = element_text(size = 8)
+  )
+
+# stack the two plots
+final_plot <- p1 / p2 + plot_annotation(tag_levels = "A")
+
+# show the final plot
+print(final_plot)
+
+# print the tajima's d threshold
+print(tajd_threshold)
+
+# print the betascore threshold
+print(q99_line)
