@@ -1,0 +1,186 @@
+# load needed packages
+library(ggplot2)
+library(tidyverse)
+
+# read in the ancient american genotype data
+data <- read.table(
+  "path/to/data/cntnap2_denfreq_ancientamericans.txt",
+  header = TRUE, sep = "\t"
+) %>%
+  tibble::as_tibble()
+
+# rename sample columns
+colnames(data)[6:ncol(data)] <- paste0(colnames(data)[6:ncol(data)], ".")
+colnames(data)[5:ncol(data)] <- c(
+  "Denisovan-1", "Queretaro-1", "Queretaro-2", "Queretaro-3",
+  "Ontario-1",   "Montana-1",   "California-1","California-2",
+  "California-3","California-4","California-5","California-6",
+  "California-7","California-8","California-9","Patagonia-1",
+  "Patagonia-2","Patagonia-3","Patagonia-4","Peru-1","Peru-2",
+  "Peru-3","Alaska-1"
+)
+
+# keep the samples and region used here
+data <- data %>%
+  dplyr::select(
+    chrom, pos, ref, alt,
+    `Denisovan-1`, `Montana-1`, `Alaska-1`,
+    `California-9`, `California-8`, `Ontario-1`,
+    `Peru-1`, `Peru-2`, `Peru-3`,
+    `California-4`, `California-3`, `Queretaro-3`,
+    `Queretaro-2`, `Queretaro-1`,
+    `California-1`, `California-5`,
+    `Patagonia-1`, `Patagonia-2`, `Patagonia-3`,
+    `Patagonia-4`, `California-7`, `California-6`,
+    `California-2`
+  ) %>%
+  dplyr::filter(pos >= 147365000, pos <= 147420000)
+
+# change data from wide to long format
+long_data <- data %>%
+  tidyr::pivot_longer(
+    cols = tidyselect::contains("-"),
+    names_to = "Sample",
+    values_to = "Genotype"
+  )
+
+# calculate missing data for each sample
+missing_stats <- long_data %>%
+  dplyr::group_by(Sample) %>%
+  dplyr::summarise(
+    missing_prop = mean(Genotype == "./."),
+    .groups = "drop"
+  )
+
+# keep samples with 15% missing data or less
+valid_samples <- missing_stats %>%
+  dplyr::filter(missing_prop <= 0.15) %>%
+  dplyr::pull(Sample)
+
+# filter to valid samples
+filtered_long <- long_data %>%
+  dplyr::filter(Sample %in% valid_samples)
+
+# count total, kept, and removed samples
+total_samples   <- dplyr::n_distinct(long_data$Sample)
+kept_samples    <- dplyr::n_distinct(filtered_long$Sample)
+removed_samples <- total_samples - kept_samples
+
+# calculate percent removed
+percent_removed <- round(removed_samples / total_samples * 100, 1)
+
+# make the plot title
+plot_title <- paste0(
+  "Ancient American Denisovan-like Alleles (",
+  percent_removed, "% samples removed >15% missing)"
+)
+
+# set sample order
+filtered_long$Sample <- factor(
+  filtered_long$Sample,
+  levels = rev(c(
+    "Denisovan-1", "Montana-1", "Alaska-1",
+    "California-9", "California-8", "Ontario-1",
+    "Peru-1", "Peru-2", "Peru-3",
+    "California-4", "California-3", "Queretaro-3",
+    "Queretaro-2", "Queretaro-1",
+    "California-1", "California-5",
+    "Patagonia-1", "Patagonia-2", "Patagonia-3",
+    "Patagonia-4", "California-7", "California-6",
+    "California-2"
+  ))
+)
+
+# set genotype groups
+geno_levels <- c("./.", "0/0", "0/1", "1/1")
+
+# calculate genotype percentages by sample
+geno_percent_by_sample <- filtered_long %>%
+  dplyr::mutate(
+    Genotype_norm = dplyr::case_when(
+      Genotype %in% c("0/1", "1/0") ~ "0/1",
+      Genotype %in% c("./.", "0/0", "1/1") ~ Genotype,
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  dplyr::count(Sample, Genotype_norm, name = "count") %>%
+  tidyr::complete(Sample, Genotype_norm = geno_levels, fill = list(count = 0)) %>%
+  dplyr::group_by(Sample) %>%
+  dplyr::mutate(Percent = round(100 * count / sum(count), 2)) %>%
+  dplyr::ungroup() %>%
+  dplyr::select(Sample, Genotype = Genotype_norm, Percent) %>%
+  tidyr::pivot_wider(names_from = Genotype, values_from = Percent) %>%
+  dplyr::mutate(Total_SNPs = rowSums(across(all_of(geno_levels), ~ .))) %>%
+  dplyr::arrange(factor(Sample, levels = levels(filtered_long$Sample)))
+
+# print genotype percentage table
+print(geno_percent_by_sample, n = Inf)
+
+# set genotype colors
+color_map <- c(
+  "1/1" = "green", "0/1" = "yellow", "1/0" = "yellow",
+  "0/0" = "pink", "./." = "transparent"
+)
+
+# make the genotype plot
+ggplot(filtered_long, aes(x = pos, y = Sample, fill = Genotype)) +
+  geom_point(aes(color = Genotype), size = 2, shape = 15, stroke = 1) +
+  scale_fill_manual(values = color_map, na.value = "transparent", name = "Genotype") +
+  scale_color_manual(values = color_map, na.value = "transparent", name = "Genotype") +
+  theme_minimal() +
+  labs(
+    title = plot_title,
+    x = "Position",
+    y = "Samples"
+  ) +
+  theme(axis.text.y = element_text(hjust = 1))
+
+# set genotype groups again
+geno_levels <- c("./.", "0/0", "0/1", "1/1")
+
+# make genotype percentage data
+df_geno <- filtered_long %>%
+  dplyr::mutate(
+    Genotype_norm = dplyr::case_when(
+      Genotype %in% c("0/1", "1/0") ~ "0/1",
+      Genotype %in% c("./.", "0/0", "1/1") ~ Genotype,
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  dplyr::filter(!is.na(Genotype_norm)) %>%
+  dplyr::count(Sample, Genotype_norm, name = "n") %>%
+  tidyr::complete(Sample, Genotype_norm = geno_levels, fill = list(n = 0)) %>%
+  dplyr::group_by(Sample) %>%
+  dplyr::mutate(total_sites = sum(n), pct = round(100 * n / total_sites, 2)) %>%
+  dplyr::ungroup()
+
+# make table with total sites
+totals_tbl <- df_geno %>%
+  dplyr::distinct(Sample, total_sites) %>%
+  dplyr::rename(n_sites = total_sites)
+
+# make table with percentages
+perc_tbl <- df_geno %>%
+  dplyr::select(Sample, Genotype_norm, pct) %>%
+  tidyr::pivot_wider(
+    names_from = Genotype_norm,
+    values_from = pct,
+    names_prefix = "pct_",
+    values_fill = 0
+  )
+
+# combine percentage and total site tables
+geno_percent_by_sample <- perc_tbl %>%
+  dplyr::left_join(totals_tbl, by = "Sample") %>%
+  dplyr::select(
+    Sample,
+    n_sites,
+    pct_0.0 = `pct_0/0`,
+    pct_0.1 = `pct_0/1`,
+    pct_1.1 = `pct_1/1`,
+    pct_missing = `pct_./.`
+  ) %>%
+  dplyr::arrange(factor(Sample, levels = levels(filtered_long$Sample)))
+
+# print final genotype percentage table
+print(geno_percent_by_sample, n = Inf)
