@@ -1,0 +1,154 @@
+# denisovan allele frequency heatmap
+# amr populations split, other groups combined
+
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+# set the region to highlight
+highlight_start <- 147365000
+highlight_end   <- 147420000
+
+# name the columns in the input file
+cols <- c(
+  "name","chromosome","start_hg19","end_hg19","segment_length",
+  "n_snps","pop_id","posterior","n_altai","n_denisova","n_vindija",
+  "snplist"
+)
+
+# read in archaic tract file
+arch <- read.table(
+  gzfile("pathtofile"),
+  header = FALSE, sep = "\t", stringsAsFactors = FALSE,
+  col.names = cols
+)
+
+# keep high-confidence tracts in the cntnap2 region
+arch <- subset(
+  arch,
+  chromosome == 7 &
+    start_hg19 >= 145813893 &
+    end_hg19   <= 148118090 &
+    posterior  > 0.8
+)
+
+# label each tract as denisovan or neanderthal
+arch$n_neanderthal <- pmax(arch$n_altai, arch$n_vindija)
+arch$source <- ifelse(arch$n_denisova > arch$n_neanderthal, "Denisova", "Neanderthal")
+
+# keep only denisovan-like tracts
+arch <- subset(arch, source == "Denisova")
+
+# map populations to superpopulations
+pop2sup <- c(
+  PEL="AMR", MXL="AMR", CLM="AMR", PUR="AMR",
+  GBR="EUR", CEU="EUR", IBS="EUR", TSI="EUR", FIN="EUR",
+  CHB="EAS", CHS="EAS", JPT="EAS", CDX="EAS", KHV="EAS",
+  GIH="SAS", PJL="SAS", STU="SAS", BEB="SAS", ITU="SAS"
+)
+
+# add superpopulation labels
+arch$superpop <- pop2sup[arch$pop_id]
+
+# remove populations not used here
+arch <- subset(arch, !is.na(superpop))
+
+# split amr groups and combine the others
+arch$group <- ifelse(arch$superpop == "AMR", arch$pop_id, arch$superpop)
+
+# set chromosome counts for each group
+chrom_counts_pop <- c(PEL=170, MXL=128, CLM=188, PUR=208)
+chrom_counts_sup <- c(EUR=1006, EAS=1008, SAS=978)
+
+# make 10 kb bins across the region
+bins <- seq(145813893, 148118090, by = 10000)
+groups <- c("PEL","MXL","CLM","PUR","EUR","EAS","SAS")
+
+# make one row for every group and bin
+grid <- expand.grid(group = groups, bin_start = bins)
+grid$bin_end <- grid$bin_start + 10000
+
+# count unique haplotypes that overlap each bin
+count_overlap_unique <- function(grp, start, end) {
+  idx <- arch$group == grp &
+    arch$start_hg19 <= end &
+    arch$end_hg19 >= start
+  length(unique(arch$name[idx]))
+}
+
+# apply the count function to each row
+grid$count <- mapply(
+  count_overlap_unique,
+  grid$group,
+  grid$bin_start,
+  grid$bin_end
+)
+
+# replace missing counts with zero
+grid$count[is.na(grid$count)] <- 0
+
+# add the right denominator for each group
+grid$denom <- ifelse(
+  grid$group %in% names(chrom_counts_pop),
+  chrom_counts_pop[grid$group],
+  chrom_counts_sup[grid$group]
+)
+
+# make sure counts do not go above the denominator
+grid$count <- pmin(grid$count, grid$denom)
+
+# calculate allele frequency
+grid$allele_freq <- grid$count / grid$denom
+
+# replace missing frequencies with zero
+grid$allele_freq[is.na(grid$allele_freq)] <- 0
+
+# set group order in the plot
+grid$group <- factor(grid$group, levels = groups)
+
+# set nicer labels for the y axis
+group_labels <- c(
+  PEL = "Peru",
+  MXL = "Mexico",
+  CLM = "Colombia",
+  PUR = "Puerto Rico",
+  EUR = "Europe",
+  EAS = "East Asia",
+  SAS = "South Asia"
+)
+
+# print the highest allele frequency
+cat("Max allele frequency =", max(grid$allele_freq), "\n")
+
+# set low and high colors for the heatmap
+low_blue  <- hcl(h = 220, c = 35, l = 90) 
+high_blue <- hcl(h = 220, c = 95, l = 30) 
+
+# make the heatmap
+p_freq <- ggplot(grid) +
+  geom_tile(aes(
+    x = bin_start + 5000,
+    y = group,
+    fill = allele_freq
+  ), height = 0.8) +
+  scale_fill_gradient(
+    low = low_blue,
+    high = high_blue,
+    name = "Denisovan-like\nAllele Frequency",
+    limits = c(0, 1),
+    na.value = low_blue
+  ) +
+  scale_x_continuous(
+    limits = c(145813893, 148118090),
+    labels = function(x) paste0(round(x / 1e6), " Mb")
+  ) +
+  scale_y_discrete(labels = group_labels) +
+  labs(
+    x = "Position (hg19)",
+    y = "Population",
+    title = ""
+  ) +
+  theme_minimal(base_size = 12)
+
+# show the plot
+print(p_freq)
