@@ -1,0 +1,133 @@
+# load needed packages
+library(ggplot2)
+library(dplyr)
+library(scales)
+
+# set the populations being compared
+population_2 <- "PUR"
+population_3 <- "Denisovan"
+population_1_list <- c("YRI", "CHB", "CEU")
+
+# make a function to create the histogram
+create_plot <- function(zdata, cntnap2_score) {
+  
+  # set the theoretical top 1% z-score cutoff
+  z_thresh <- 2.326348
+  
+  # make the histogram
+  ggplot(zdata, aes(x = z_scores)) +
+    geom_histogram(binwidth = .25,
+                   colour = "darkgray",
+                   fill   = "darkgray") +
+    
+    # add the genome-wide mean line
+    geom_vline(aes(xintercept = mean(z_scores)), 
+               color = "#E69F00",
+               linetype = "dashed",
+               linewidth = 2) +
+    
+    # add the cntnap2 score line
+    geom_vline(xintercept = cntnap2_score,
+               color = "#56B4E9",
+               linewidth = 2) +
+    
+    # add the theoretical top 1% line
+    geom_vline(xintercept = z_thresh,
+               color = "red",
+               linetype = "dashed",
+               linewidth = 2) +
+    
+    # set x-axis breaks and limits
+    scale_x_continuous(breaks = seq(-5, 5, by = 1),
+                       limits = c(-6, 6)) +
+    
+    # show y-axis counts in thousands
+    scale_y_continuous(labels = comma_format(scale = 1e-3)) +
+    
+    # label the axes
+    xlab("D z-score") +
+    ylab("Number of windows (thousands)") +
+    
+    # set the plot theme
+    theme_minimal(base_size = 16) +
+    theme(
+      axis.title.x     = element_text(size = 18, margin = margin(t = 10)),
+      axis.title.y     = element_text(size = 18, margin = margin(r = 10)),
+      axis.text.x      = element_text(size = 16),
+      axis.text.y      = element_text(size = 16),
+      panel.grid.major = element_line(size = 0.6, color = "gray"),
+      panel.grid.minor = element_line(size = 0.3, color = "lightgray"),
+      panel.background = element_blank(),
+      plot.background  = element_blank()
+    ) +
+    
+    # label the cntnap2 line
+    annotate("text",
+             x     = cntnap2_score,
+             y     = max(zdata$z_scores),
+             label = expression(bold("CNTNAP2")),
+             vjust = -0.3,
+             hjust = -1,
+             color = "#56B4E9",
+             size  = 8,
+             angle = 90)
+}
+
+# make one plot for each p1 population
+for (population_1 in population_1_list) {
+  
+  # build the genome-wide data filename
+  data_filename <- paste0(
+    "path/to/data/dstatistics_",
+    population_1, "_PEL_", population_3,
+    "_55.0kb_windows.txt"
+  )
+  
+  # read the genome-wide d-statistic data
+  data <- read.table(data_filename, header = TRUE, sep = "\t")
+  
+  # make sure the data is a data frame
+  data <- data.frame(data)
+  
+  # convert all columns to numeric
+  data <- mutate_all(data, function(x) as.numeric(as.character(x)))
+  
+  # keep windows with enough sites
+  data <- data %>% filter(site_count >= 50)
+  
+  # keep only d values and site counts
+  datad <- data.frame(data$d, data$site_count)
+  
+  # remove missing rows
+  datad <- na.omit(datad)
+  
+  # rename columns
+  colnames(datad) <- c("d", "d_length")
+  
+  # convert d values to z-scores
+  zdatad <- (datad$d - mean(datad$d)) / sd(datad$d)
+  
+  # put z-scores in a data frame
+  zdatad <- data.frame(z_scores = zdatad)
+  
+  # build the cntnap2 data filename
+  cntnap2_file <- paste0(
+    "path/to/data/cntnap2/CNTNAP2dstatistics_",
+    population_1, "_", population_2, "_", population_3, ".txt"
+  )
+  
+  # read the cntnap2 d-statistic data
+  cntnap2_data <- read.table(cntnap2_file, header = TRUE, sep = "\t")
+  
+  # get the raw cntnap2 d value
+  cntnap2_d_raw <- as.numeric(cntnap2_data$d)
+  
+  # convert the cntnap2 d value to a z-score
+  cntnap2d <- (cntnap2_d_raw - mean(datad$d)) / sd(datad$d)
+  
+  # make the plot
+  plotd <- create_plot(zdatad, cntnap2d)
+  
+  # show the plot
+  print(plotd)
+}
