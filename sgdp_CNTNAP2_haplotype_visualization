@@ -1,0 +1,61 @@
+# load needed packages
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(tidyverse)
+
+# read in the genotype data
+data <- read.table("path/to/data/test_cntnap2_den_freq_simons", 
+                   header = TRUE, sep = "\t")
+
+# keep the first five columns
+first_five_cols <- data[, 1:5]
+
+# change the data from wide to long format
+long_data <- data %>%
+  pivot_longer(cols = contains("_"),
+               names_to = "Sample",
+               values_to = "Genotype")
+
+# filter to the genotypes and region used in the plot
+filtered_data <- long_data %>%
+  
+  # remove reference, unphased heterozygous, and unphased alternate genotypes
+  filter(Genotype != "0|0" & Genotype != "0/1" & Genotype != "1/1") %>%
+  
+  # keep only the cntnap2 region
+  filter(pos >= 147325000 & pos <= 147430000)
+
+# make the genotype plot
+ggplot(filtered_data, aes(x = pos, y = Sample, fill = Genotype)) +
+  geom_point(aes(color = Genotype), size = 1.5, shape = 20, stroke = 1) +
+  
+  # set fill colors for each genotype
+  scale_fill_manual(values = c("1|1" = "green", 
+                               "0|1" = "gold", 
+                               "1|0" = "gold", 
+                               "0|0" = "transparent", 
+                               ".|." = "red"),
+                    name = "Genotype") +
+  
+  # set point colors for each genotype
+  scale_color_manual(values = c("1|1" = "green", 
+                                "0|1" = "gold", 
+                                "1|0" = "gold", 
+                                "0|0" = "transparent", 
+                                ".|." = "red"),
+                     name = "Genotype") +
+  
+  # add plot labels
+  labs(title = "Simon's Dataset Denisovan-like Alleles",
+       x = "Position",
+       y = "Samples") +
+  
+  # set the plot theme
+  theme(
+    panel.background = element_rect(fill = "gray95", color = NA),
+    plot.background  = element_rect(fill = "gray95", color = NA),
+    axis.text.x = element_text(size = 9),
+    axis.text.y = element_text(size = 9, hjust = 1),
+    plot.title  = element_text(size = 9)
+  )
