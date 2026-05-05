@@ -1,0 +1,193 @@
+# load needed packages
+library(ggplot2)
+library(dplyr)
+library(readr)
+library(tidyr)
+
+# set the input file
+infile   <- "path/to/data/cntnap2_den_kgp_sample_genotypes.txt"
+
+# set the region to keep
+min_pos  <- 147365000
+max_pos  <- 147420000
+
+# read the genotype data
+dat <- readr::read_tsv(infile, col_types = cols(), progress = FALSE)
+
+# rename the chromosome column if needed
+if ("#chrom" %in% names(dat)) {
+  dat <- dplyr::rename(dat, chrom = `#chrom`)
+}
+
+# clean columns and keep the region
+dat <- dat %>%
+  dplyr::mutate(
+    position    = as.numeric(position),
+    sample_id   = as.character(sample_id),
+    sample_geno = as.character(sample_geno),
+    population  = as.character(population)
+  ) %>%
+  dplyr::filter(position >= min_pos, position <= max_pos)
+
+# collapse genotypes into simple groups
+geno_cat <- function(g) {
+  dplyr::case_when(
+    g %in% c("0|0","0/0") ~ "0/0",
+    g %in% c("0|1","1|0","0/1","1/0") ~ "0/1",
+    g %in% c("1|1","1/1") ~ "1/1",
+    g %in% c(".|.","./.") ~ "Missing",
+    TRUE ~ NA_character_
+  )
+}
+
+# add genotype group
+dat <- dat %>%
+  mutate(geno_cat = geno_cat(sample_geno))
+
+# set genotype order
+dat$geno_cat <- factor(dat$geno_cat, levels = c("0/0","0/1","1/1"))
+
+# set genotype colors
+geno_colors <- c(
+  "0/0" = "transparent",
+  "0/1" = "gold",
+  "1/1" = "green"
+)
+
+# rank genotypes for carrier calls
+geno_rank <- function(g) {
+  dplyr::case_when(
+    g %in% c("1|1","1/1") ~ 3,
+    g %in% c("0|1","1|0","0/1","1/0") ~ 2,
+    g %in% c("0|0","0/0") ~ 1,
+    g %in% c(".|.","./.") ~ 0,
+    TRUE ~ NA_real_
+  )
+}
+
+# summarize carrier status for one population
+summarize_population_table <- function(dat_pop) {
+  
+  # classify each individual
+  per_individual <- dat_pop %>%
+    mutate(rank = geno_rank(sample_geno)) %>%
+    group_by(sample_id) %>%
+    summarize(
+      n_sites = n(),
+      any_missing = any(is.na(rank) | rank == 0),
+      any_homref  = any(rank == 1),
+      all_nonref  = all(!is.na(rank) & rank >= 2),
+      all_homalt  = all(!is.na(rank) & rank == 3),
+      all_het     = all(!is.na(rank) & rank == 2),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      class = case_when(
+        any_missing ~ "Missing",
+        any_homref  ~ "Non-carrier (fails ≥1 SNP)",
+        all_homalt  ~ "HomAlt (all SNPs 1|1)",
+        all_het     ~ "Het (all SNPs 0|1)",
+        all_nonref  ~ "Carrier (mixed 0|1 + 1|1)",
+        TRUE        ~ "Missing"
+      )
+    )
+  
+  # count individuals
+  n_total   <- nrow(per_individual)
+  n_missing <- sum(per_individual$class == "Missing")
+  n_called  <- n_total - n_missing
+  
+  # count carrier classes
+  n_noncarrier <- sum(per_individual$class == "Non-carrier (fails ≥1 SNP)")
+  n_het_all     <- sum(per_individual$class == "Het (all SNPs 0|1)")
+  n_homalt_all  <- sum(per_individual$class == "HomAlt (all SNPs 1|1)")
+  n_mixed       <- sum(per_individual$class == "Carrier (mixed 0|1 + 1|1)")
+  
+  # calculate total carriers
+  n_carriers <- n_het_all + n_homalt_all + n_mixed
+  
+  # calculate carrier frequency
+  carrier_freq <- ifelse(n_called > 0, n_carriers / n_called, NA_real_)
+  
+  # return the summary table
+  tibble(
+    N_total_individuals     = n_total,
+    N_missing               = n_missing,
+    N_called                = n_called,
+    N_noncarriers           = n_noncarrier,
+    N_carriers              = n_carriers,
+    N_heterozygotes_all     = n_het_all,
+    N_homozygous_alt_all    = n_homalt_all,
+    N_mixed_carriers        = n_mixed,
+    Carrier_frequency       = carrier_freq
+  )
+}
+
+# set the amr populations to plot
+amr_pops <- c("CLM", "PEL", "MXL", "PUR")
+
+# make an empty list for summary tables
+all_summary <- list()
+
+# make one plot and table for each population
+for (pop in amr_pops) {
+  
+  # keep one population
+  dat_pop <- dat %>%
+    filter(population == pop) %>%
+    arrange(sample_id) %>%
+    mutate(sample_id = factor(sample_id, levels = unique(sample_id)))
+  
+  # get the population name
+  pop_str <- unique(dat_pop$population)
+  
+  # make the genotype dotplot
+  p <- ggplot(dat_pop, aes(x = position, y = sample_id)) +
+    geom_point(aes(color = geno_cat), size = 1.6, stroke = 0.6) +
+    scale_color_manual(
+      values = geno_colors,
+      breaks = c("0/1","1/1"),
+      labels = c("0/1 (het)","1/1 (hom alt)"),
+      name = "Genotype"
+    ) +
+    labs(
+      title = paste0("Denisovan-like SNPs (", pop_str, ")"),
+      x = "Position",
+      y = "Sample ID"
+    ) +
+    guides(
+      color = guide_legend(
+        nrow = 1,
+        override.aes = list(size = 3)
+      )
+    ) +
+    theme(
+      panel.background = element_rect(fill = "gray95", color = NA),
+      plot.background  = element_rect(fill = "gray95", color = NA),
+      axis.text.x      = element_text(size = 9),
+      axis.text.y      = element_text(size = 8, hjust = 1),
+      plot.title       = element_text(size = 10),
+      legend.position  = "bottom",
+      legend.title     = element_text(size = 9),
+      legend.text      = element_text(size = 8)
+    )
+  
+  # show the plot
+  print(p)
+  
+  # make the population summary table
+  pop_table <- summarize_population_table(dat_pop) %>%
+    mutate(Group = pop, .before = 1)
+  
+  # show the population table
+  print(pop_table)
+  
+  # save the table in the list
+  all_summary[[pop]] <- pop_table
+}
+
+# combine all population tables
+combined_summary_table <- bind_rows(all_summary)
+
+# show the combined table
+print(combined_summary_table)
